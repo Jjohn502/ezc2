@@ -9,6 +9,10 @@
 #include <nlohmann/json.hpp>
 using namespace std;
 
+/*
+PROCESS LIST FUNCTIONS
+
+*/
 
 vector<int> get_pids(){
     vector<int> pids;
@@ -51,7 +55,7 @@ nlohmann::json ps_list(int task_id, int agent_id){
     nlohmann::json task_json;
     task_json["task_id"] = task_id;
     task_json["agent_id"] = agent_id;
-    task_json["command"] = "process list";
+    task_json["command"] = "process_list";
 
     std::vector<int> pids = get_pids();
     nlohmann::json results = nlohmann::json::array();
@@ -65,53 +69,86 @@ nlohmann::json ps_list(int task_id, int agent_id){
         results.push_back(proecss);
     }
     task_json["results"] = results;
-    cout << task_json.dump(4) << endl;
+    //cout << task_json.dump(4) << endl;
     return task_json;
 }
 
-int main(){
-    
-    const char* server_host ="127.0.0.1";
-    const int server_port = 5000;
 
-    //create socket
+/*
+END PROCESS LIST FUNCTIONS
+
+*/
+
+/*
+NETWORKING FUNCTIONS
+
+*/
+
+int create_socket() {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if(sock < 0){
+    if (sock < 0) {
         cerr << "Error creating socket" << endl;
-        return 1;
+        exit(1);
     }
+    return sock;
+}
 
-    //server addr
+sockaddr_in setup_server_address(const char* server_host, int server_port) {
     sockaddr_in server_address;
     server_address.sin_family = AF_INET;
     inet_pton(AF_INET, server_host, &server_address.sin_addr);
     server_address.sin_port = htons(server_port);
+    return server_address;
+}
 
-    //connect
-    if(connect(sock, (struct sockaddr*)&server_address, sizeof(server_address)) < 0) {
+void connect_to_server(int sock, sockaddr_in& server_address) {
+    if (connect(sock, (struct sockaddr*)&server_address, sizeof(server_address)) < 0) {
         cerr << "Error connecting to server" << endl;
-        return 1;
+        exit(1);
     }
+}
 
-    const char* request = "GET /api/agent/tasks/pending/2 HTTP/1.1\r\nHOST: localhost\r\nConnection: close\r\n\r\n";
-    if(send(sock, request, strlen(request), 0) < 0){
-        cerr << "Error Sending request" << endl;
-        return 1;
+void send_request(int sock, const char* request) {
+    if (send(sock, request, strlen(request), 0) < 0) {
+        cerr << "Error sending request" << endl;
+        exit(1);
     }
+}
 
-    //Receive response
+string receive_response(int sock) {
     char buffer[4096];
     ssize_t bytes_received;
     string response_data;
-    while((bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0){
-        buffer[bytes_received] = '\0'; // null-terminate
+    while ((bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[bytes_received] = '\0';  // null-terminate
         response_data += buffer;
     }
-    cout << "Received Data: \n" << response_data << endl;
-    close(sock);
+    return response_data;
+}
+
+void send_post_request(int sock, const std::string& endpoint, const std::string& body) {
+    std::string request = "POST " + endpoint + " HTTP/1.1\r\n";
+    request += "Host: 127.0.0.1\r\n";
+    request += "Content-Type: application/json\r\n";
+    request += "Content-Length: " + std::to_string(body.length()) + "\r\n";
+    request += "\r\n";  // Headers end
+    request += body;    // Request body
+
+    if (send(sock, request.c_str(), request.length(), 0) < 0) {
+        cerr << "Error sending POST request" << endl;
+        exit(1);
+    }
+}
 
 
-    //parse the JSON
+/*
+END NETWORKING FUNCTIONS
+
+*/
+
+
+
+string parse_tasks(const string& response_data) {
     size_t json_start_pos = response_data.find("{");
     if (json_start_pos != std::string::npos) {
         std::string json_content = response_data.substr(json_start_pos);
@@ -127,20 +164,61 @@ int main(){
                 string command = task[2];
                 string timestamp = task[3];
 
+                
                 cout << "Task ID: " << task_id << ", Agent ID: " << agent_id 
                      << ", Task Name: " << command << ", Timestamp: " << timestamp << endl;
+
+                if(command == "process_list"){
+                    nlohmann::json psJson = ps_list(task_id, agent_id);
+                    return psJson.dump();
+                }
+                else if(command == "netstat"){
+                    nlohmann::json psJson = ps_list(task_id, agent_id);
+                    return psJson.dump();
+                }
             }
+
+            string body = j.dump();
+
         } catch (const std::exception& e) {
             std::cerr << "Error parsing JSON: " << e.what() << std::endl;
         }
     } else {
         std::cerr << "Could not find the start of the JSON content." << std::endl;
     }
-    
-    nlohmann::json psJson = ps_list(123, 5);
+    return "";
+}
+
+
+
+int main() {
+
+    //Server Connection stuff
+    const char* server_host = "127.0.0.1";
+    const int server_port = 5000;
+
+    int sock = create_socket();
+    sockaddr_in server_address = setup_server_address(server_host, server_port);
+    connect_to_server(sock, server_address);
+
+    const char* request = "GET /api/agent/tasks/pending/2 HTTP/1.1\r\nHOST: localhost\r\nConnection: close\r\n\r\n";
+    send_request(sock, request);
+
+    string response_data = receive_response(sock);
+    cout << "Received Data: \n" << response_data << endl;
+    close(sock);
+
 
     
-    
+    //parse Json
+    string body = parse_tasks(response_data);
+
+
+    sock = create_socket();
+    connect_to_server(sock, server_address);
+    string endpoint = "api/agent/task/send_result";
+    send_post_request(sock, endpoint, body);
+    close(sock);
+
     return 0;
-
 }
