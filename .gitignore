@@ -1,3 +1,5 @@
 #ignore venv
 .venv/
 __pycache__/
+.vscode/
+payload/test

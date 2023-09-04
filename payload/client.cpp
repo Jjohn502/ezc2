@@ -4,14 +4,127 @@
 #include <unistd.h>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <vector>
 #include <dirent.h>
 #include <nlohmann/json.hpp>
+
+#include <chrono>
+#include <thread>
+
 using namespace std;
+
+
+
+
+
+/*
+NETSAT FUNCTIONS
+*/
+
+struct Connection {
+    string local_address;
+    string remote_address;
+    string state;
+};
+
+string parseAddress(const string& addr) {
+    stringstream ss;
+    unsigned int ip[4], port;
+
+    sscanf(addr.c_str(), "%02X%02X%02X%02X:%04X", &ip[3], &ip[2], &ip[1], &ip[0], &port);
+    ss << ip[0] << "." << ip[1] << "." << ip[2] << "." << ip[3] << ":" << port;
+
+    return ss.str();
+}
+
+
+string getState(const string& hexState) {
+    int state;
+    stringstream ss;
+    ss << hex << hexState;
+    ss >> state;
+
+    switch (state) {
+        case 1: return "ESTABLISHED";
+        case 2: return "SYN_SENT";
+        case 3: return "SYN_RECV";
+        case 4: return "FIN_WAIT1";
+        case 5: return "FIN_WAIT2";
+        case 6: return "TIME_WAIT";
+        case 7: return "CLOSE";
+        case 8: return "CLOSE_WAIT";
+        case 9: return "LAST_ACK";
+        case 10: return "LISTEN";
+        case 11: return "CLOSING";
+        default: return "UNKNOWN";
+    }
+}
+
+vector<Connection> getTCPConnections() {
+    vector<Connection> connections;
+    ifstream file("/proc/net/tcp");
+    string line;
+
+    // Skip the header line
+    getline(file, line);
+
+    while (getline(file, line)) {
+        stringstream ss(line);
+        string tmp, local_address, remote_address, state;
+
+        ss >> tmp; // Skip the sl field
+        ss >> local_address;
+        ss >> remote_address;
+        ss >> state;
+
+        Connection conn;
+        conn.local_address = parseAddress(local_address);
+        conn.remote_address = parseAddress(remote_address);
+        conn.state = getState(state);
+
+        connections.push_back(conn);
+    }
+
+    return connections;
+}
+
+nlohmann::json netstat_list(int task_id, int agent_id) {
+    // JSON building
+    nlohmann::json task_json;
+    task_json["task_id"] = task_id;
+    task_json["agent_id"] = agent_id;
+    task_json["command"] = "netstat";
+
+    vector<Connection> connections = getTCPConnections();
+    nlohmann::json results = nlohmann::json::array();
+
+    for (const auto& conn : connections) {
+        nlohmann::json connection = {
+            {"Local", conn.local_address},
+            {"Remote", conn.remote_address},
+            {"State", conn.state}
+        };
+        results.push_back(connection);
+    }
+    task_json["results"] = results;
+
+    return task_json;
+}
+
+
+
+
+
+/*
+END NETSAT FUNCTIONS
+*/
+
+
+
 
 /*
 PROCESS LIST FUNCTIONS
-
 */
 
 vector<int> get_pids(){
@@ -76,7 +189,6 @@ nlohmann::json ps_list(int task_id, int agent_id){
 
 /*
 END PROCESS LIST FUNCTIONS
-
 */
 
 /*
@@ -140,6 +252,17 @@ void send_post_request(int sock, const std::string& endpoint, const std::string&
     }
 }
 
+string doPost(string body, int sock, sockaddr_in server_address){
+    sock = create_socket();
+    connect_to_server(sock, server_address);
+    string endpoint = "api/agent/task/send_result";
+    send_post_request(sock, endpoint, body);
+    string response = receive_response(sock);
+    close(sock);
+    cout << "Sent paylod" << endl;
+    return response;
+}
+
 
 /*
 END NETWORKING FUNCTIONS
@@ -148,7 +271,7 @@ END NETWORKING FUNCTIONS
 
 
 
-string parse_tasks(const string& response_data) {
+void parse_tasks(const string& response_data, int sock, sockaddr_in server_address) {
     size_t json_start_pos = response_data.find("{");
     if (json_start_pos != std::string::npos) {
         std::string json_content = response_data.substr(json_start_pos);
@@ -168,13 +291,17 @@ string parse_tasks(const string& response_data) {
                 cout << "Task ID: " << task_id << ", Agent ID: " << agent_id 
                      << ", Task Name: " << command << ", Timestamp: " << timestamp << endl;
 
-                if(command == "process_list"){
-                    nlohmann::json psJson = ps_list(task_id, agent_id);
-                    return psJson.dump();
+
+                if(command == "netstat"){
+                    nlohmann::json netstatJson = netstat_list(task_id, agent_id);
+                    string response = doPost(netstatJson.dump(), sock, server_address);
                 }
-                else if(command == "netstat"){
+                else if(command == "process_list"){
                     nlohmann::json psJson = ps_list(task_id, agent_id);
-                    return psJson.dump();
+                    string response = doPost(psJson.dump(), sock, server_address);
+                }
+                else {
+                    cout << "No method for this task." <<endl;
                 }
             }
 
@@ -186,7 +313,6 @@ string parse_tasks(const string& response_data) {
     } else {
         std::cerr << "Could not find the start of the JSON content." << std::endl;
     }
-    return "";
 }
 
 
@@ -207,18 +333,11 @@ int main() {
     string response_data = receive_response(sock);
     cout << "Received Data: \n" << response_data << endl;
     close(sock);
-
-
     
-    //parse Json
-    string body = parse_tasks(response_data);
+    //parse Json and send POSTS
+    parse_tasks(response_data, sock, server_address);
 
 
-    sock = create_socket();
-    connect_to_server(sock, server_address);
-    string endpoint = "api/agent/task/send_result";
-    send_post_request(sock, endpoint, body);
-    close(sock);
 
     return 0;
 }
